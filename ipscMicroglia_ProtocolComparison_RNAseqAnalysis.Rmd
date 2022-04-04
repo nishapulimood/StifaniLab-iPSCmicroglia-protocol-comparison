@@ -1,0 +1,976 @@
+---
+title: "Code for Github Repo - Bulk RNA sequencing analysis of iPSC-derived microglia differentiatied using the protocols from Douvaras et al OR McQuade et al. In this script, OLD microglia = Douvaras microglia and NEW microglia = McQuade microglia"
+output: html_notebook
+---
+=========================================================================================
+# Install required packages
+```{r}
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install("edgeR")
+
+#install.packages("gplots")
+
+#if (!requireNamespace('BiocManager', quietly = TRUE))
+#   install.packages('BiocManager')
+#BiocManager::install('EnhancedVolcano')
+
+#if (!requireNamespace('BiocManager', quietly = TRUE))
+#   install.packages('BiocManager')
+#BiocManager::install('goseq')
+
+#install.packages("GOplot")
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+
+#BiocManager::install("Glimma")
+```
+
+# Load required packages 
+```{r}
+requiredpkgs <- c("limma", "Glimma", "edgeR", "caTools", "dplyr", "plyr", "gplots", "magrittr",  "RColorBrewer", "randomcoloR", "pheatmap", "plotly", "goseq", "GOplot", "org.Hs.eg.db", "knitr", "calibrate", "xlsx","GeneOverlap")
+pacman::p_load(char = requiredpkgs)
+```
+
+# Enter the correct working directory where your data files are located. Doing this in the {r setup} chunk will establish this working directory for the entire R notebook.Note that the newly established directory will only start from the NEXT chunk, not this one!
+```{r setup}
+knitr::opts_knit$set(root.dir = normalizePath("C:/Users/Nisha Pulimood/Desktop/Stifani lab/Microglia"))
+```
+
+# Read in the data file with raw counts. Make sure you are in the correct working directory where the data is saved
+```{r}
+microgliacounts_BATCH1 <- read.table(file="./Differentiation Protocol comparison/NEW vs OLD protocol paper/DSP875_isogenic.tsv", header=TRUE, sep="\t")
+head(microgliacounts_BATCH1)
+
+microgliacounts_BATCH2 <- read.table(file="./Differentiation Protocol comparison/NEW vs OLD protocol paper/DSP969_isogenic.tsv", header=TRUE, sep="\t")
+head(microgliacounts_BATCH2)
+
+microgliacounts_BATCH3 <- read.table(file="./Differentiation Protocol comparison/NEW vs OLD protocol paper/DSP1038_isogenic.tsv", header=TRUE, sep="\t")
+head(microgliacounts_BATCH3)
+
+microgliacounts_BATCH4 <- read.table(file="./Differentiation Protocol comparison/NEW vs OLD protocol paper/DSP1120_isogenic.tsv", header=TRUE, sep="\t")
+head(microgliacounts_BATCH4)
+
+```
+
+# Merge batch files to create single dataframe for subsequent analyses. Note that "OLD" = Douvaras microglia and "NEW" = McQuade microglia
+```{r 4 - Formatting raw data}
+
+microgliacounts <- merge(microgliacounts_BATCH1, microgliacounts_BATCH2, by="ENSEMBL_ID", all=FALSE,sort=TRUE)
+microgliacounts <- merge(microgliacounts, microgliacounts_BATCH3, by="ENSEMBL_ID", all=FALSE, sort=TRUE)
+microgliacounts <- merge(microgliacounts, microgliacounts_BATCH4, by="ENSEMBL_ID", all=FALSE, sort=TRUE)
+head(microgliacounts)
+tail(microgliacounts)
+
+microgliacounts <- microgliacounts[,c(1,2,3,5,9,12,16,17,4,8,15)]
+colnames(microgliacounts) <- c("ENSEMBL_ID","Gene_Symbol", "Gene_Length", "CS52old.ISO_1", "CS52old.ISO_2", "CS52old.ISO_3","CS52old.ISO_4a", "CS52old.ISO_4b", "CS52new.ISO_1", "CS52new.ISO_2", "CS52new.ISO_4")
+head(microgliacounts)
+```
+
+
+# Create a DGEList class object by indicating which columns of the dataset are counts and which are gene identifiers. Note that "OLD" = Douvaras microglia and "NEW" = McQuade microglia
+```{r}
+protocol <- factor(c(rep("old",times=5),rep("new",times=3)))
+
+mydata <- DGEList(counts=microgliacounts[,4:11], genes=microgliacounts[,1:3], group=protocol)
+
+mydata$samples
+dim(mydata)
+```
+
+# FILTERING - as recommended by edgeR. "Roughly speaking, the strategy keeps genes that have at least min.count reads [min.count=10 reads] in a worthwhile number [smallest group size = 1 in this dataset] of samples." Uses CPM values rather than counts in order to avoid giving preference to samples with large library sizes (aka sequencing depth).
+```{r}
+keep <- filterByExpr(mydata)
+mydata <- mydata[keep, , keep.lib.sizes=FALSE]
+dim(mydata)
+```
+
+# NORMALIZATION - According to the edgeR userguide, this step "normalizes for RNA composition by finding a set of scaling factors for the library sizes that minimize the log-fold changes between the samples for most genes. The default method for computing these scale factors uses a trimmed mean of M-values (TMM) between each pair of samples. We call the product of the original library size and the scaling factor the effective library size. The effective library size replaces the original library size in all downsteam analyses. TMM is recommended for most RNA-Seq data where the majority (more than half) of the genes are believed not differentially expressed between any pair of the samples.A normalization factor below 1 indicates that a small number of high count genes are monopolizing the sequencing, causing the counts for other genes to be lower than would be usual given the library size. As a result, the library size will be scaled down, analogous to scaling the counts upwards in that library. Conversely, a factor above 1 scales up the library size, analogous to downscaling the counts." (See Data ppt for visual explanation)
+```{r}
+mydata <- calcNormFactors(mydata, method="TMM")
+mydata$samples$batch <- factor(c(1,2,3,4,4,1,2,4))
+mydata$samples
+```
+
+# Microglia marker genes compiled from literature, to compare heatmaps of NEW vs OLD across development
+```{r}
+#Numbers in the object names of the genes lists are PMID of the source publication
+microgliagenes24162652 <- c("HEXB","P2RY12","CXC3CR1","P2RY13","TREM2")
+microgliagenes24162652_more <- c("S100A8","TMEM119","S100A9","RNASE4","GPR34","FCRLS","SIGLECH","OLFML3","FOS","SCLO2B1","TGFBR1","SLC2A5","CAMP","ITGB5","CRYBB1","SYNGR1","GPR56","NGP","CMRF35","HPGD")  
+microgliagenes24316888 <- c("P2RY12","GPR34","MERTK","C1QA","PROS1","GAS6")
+microgliagenes27668937 <- c("ITGAM","ITGB2","CSF1R","PTPRC","AIF1","ADORA3","LGMN")
+microgliagenes25186741 <- c("GPR84","CCR7","BCL2A1D","TNF","NCF1","GDF15","OSM","LMC25","H2-OA","CD83","CCL3","GNA15","IL1B","PFAU","CCL9","TMEM119","C1QA","LRF8","CXCL16","CH25H","HCK","CCL12","PTAFR","CD300A","LRT5","STPI1","SELPIG","SASH3","BSG","TLR2","P2RY6","CDI4","BCL2A1A","BCL2A1C")
+Stefano_added <- c("RUNX1","SPI1") #EnSEMBL ID for PU.1 = SPI1 = ENSG00000066336 and RUNX1 = ENSG00000159216. These are early microglia differentiation markers. 
+
+microgliamarkerlist <- c(microgliagenes24162652,microgliagenes24316888,microgliagenes27668937, microgliagenes25186741, Stefano_added)
+microgliamarkersdata <- mydata[mydata$genes$Gene_Symbol %in% microgliamarkerlist,] # Extract only microglia genes from the original dataset
+
+#microgliamarkers_CS52cpm <- as.data.frame(microgliamarkers_CS52$counts)
+# Transform counts to log2 CPM in a matrix format needed for heatmap
+microgliamarkers_cpm <- cpm(microgliamarkersdata, log=TRUE)
+row.names(microgliamarkers_cpm) <- microgliamarkersdata$genes$Gene_Symbol
+microgliamarkers_cpm_ <- t(scale(t(microgliamarkers_cpm))) #Scaling each gene by row
+row.names(microgliamarkers_cpm_) <- microgliamarkersdata$genes$Gene_Symbol
+
+#tiff("../Files for Stefano/CS52Old+New_Iso+Pat Dvlpt timepoint heatmap_UPDATED.tif", units="in", width=12, height=10, res=300) #Must specify res=300dpi for export of a publication quality image/graph. width and height specifications will alter image, so you may have to play around until you find the best conditions for the specific image/graph
+par(mar=c(20,8,5,8)+0.1, xpd=TRUE) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+pheatmap::pheatmap(microgliamarkers_cpm_[,c(3,1,2,4,5,6:8)], labels_col = c("OLD-Day45","OLD-Day48","OLD-Day58","OLD-Day62","OLD-Day66","NEW-Day42","NEW-Day45","NEW-Day44+46"), cellwidth=40,fontsize_row=5.5, fontsize_col=12, angle_col=45,  main="Microglia Markers in all CS52 OLD vs NEW - scaled", fontsize=12, cluster_cols = F, border_color = NA) #IMPORTANT! heatmap color scaling is done based on all the samples in the heatmap dataset, In this case, due to much larger differences between sample sets, the differences within sample sets (Patient vs Isogenic) become all but invisible 
+#dev.off()
+
+```
+
+# Get genewise dispersion estimates for all genes. Note that "OLD" = Douvaras microglia and "NEW" = McQuade microglia
+```{r}
+protocol <- factor(c(rep("old",times=5),rep("new",times=3)))
+protocol <- relevel(protocol,"old")
+batch <- factor(c(1,2,3,4,4,1,2,4))
+design1 <- model.matrix(~ protocol + batch)
+design1
+
+mydata <- estimateDisp(mydata, design1, robust=TRUE)
+plotMDS(mydata, col=c(rep("blue",times=5), rep("darkred",times=3))) 
+
+fit <- glmQLFit(mydata, design1, robust=TRUE)
+QLFtest <- glmQLFTest(fit, coef=2)
+
+decideTestsobj <- summary(decideTestsDGE(QLFtest))
+decideTestsobj
+```
+
+#Run a DEG analysis pipeline with mature samples only - OLD sample 2, OLD sample 4b, NEW sample 2 and NEW sample 4. Note that "OLD" = Douvaras microglia and "NEW" = McQuade microglia
+```{r}
+protocolX2 <- factor(c(rep("old",times=2),rep("new",times=2)))
+protocolX2 <- relevel(protocolX2,"old")
+
+mydataX2 <- DGEList(counts=microgliacounts[,c(5,8,10,11)], genes=microgliacounts[,1:3], group=protocolX2)
+mydataX2$samples
+
+keep <- filterByExpr(mydataX2)
+mydataX2 <- mydataX2[keep, , keep.lib.sizes=FALSE]
+
+mydataX2 <- calcNormFactors(mydataX2, method="TMM")
+mydataX2$samples$batch <- factor(c(2,4,2,4))
+
+batchX2 <- factor(c(2,4,2,4))
+design1X2 <- model.matrix(~ protocolX2 + batchX2) #
+design1X2
+
+mydataX2 <- estimateDisp(mydataX2, design1X2, robust=TRUE)
+plotMDS(mydataX2, col=c(rep("blue",times=2), rep("darkred",times=2))) 
+
+fitX2 <- glmQLFit(mydataX2, design1X2, robust=TRUE) 
+
+QLFtestX2 <- glmQLFTest(fitX2, coef=2) #Here is where you would  need to specify the coef argument to ensure that the correct comparisons are made to generate DEGs. The default is coef=last column in design matrix, which compares last column coefficient to the intercept.
+
+decideTestsobjX2 <- summary(decideTestsDGE(QLFtestX2))
+decideTestsobjX2
+
+topTagsX2 <- topTags(QLFtestX2, n=sum(decideTestsobjX2[c(1,3),]), sort.by="PValue")
+topTagsX2 <- as.data.frame(topTagsX2)
+head(topTagsX2,50)
+
+volcanodataX2 <- as.data.frame(topTags(QLFtestX2, n=length(QLFtestX2$genes$Gene_Symbol), sort.by="p.value"))
+volcanodataX2 <- cbind(volcanodataX2$logFC, volcanodataX2$FDR, -log10(volcanodataX2$PValue))
+colnames(volcanodataX2) <- c("logFC", "FDR", "-log10_Pvalue")
+.rowNamesDF(volcanodataX2, make.names=TRUE) <- QLFtestX2$genes$Gene_Symbol
+
+#tiff("./Differentiation Protocol comparison/NEW vs OLD protocol paper/Volcanoplot_maturesamples_LZWcomp.tif", units="in", width=12, height=10, res=300, compression="lzw")
+with(volcanodataX2, plot(x=logFC, y=`-log10_Pvalue`, pch=20, col="darkgrey", main="Mature Samples: OLD_2+4b, NEW_2+4: Volcano plot with P-value", cex.axis=3, cex.names=2))
+with(subset(volcanodataX2, FDR<0.05 & logFC<0), points(logFC, `-log10_Pvalue`, pch=20, col="blue"))
+with(subset(volcanodataX2, FDR<0.05 & logFC>0), points(logFC, `-log10_Pvalue`, pch=20, col="darkred"))
+#dev.off()
+
+```
+
+#New functions needed for the rest of the script
+```{r}
+#This is a function to calculate the percentage of DEGs from a particular gene signature that are present in the DEGs in our analysis
+percent <- function(x,total){
+  return(paste(round(x/total*100),"%"))
+}
+
+#This is a function to color upreg genes red, downreg genes blue and n.s. genes black, where x = object used to make the barplot, eg: MGcluster1_logFC
+red_upreg_blue_downreg_blk_ns <- function(x){
+  ifelse(x$FDR<0.05,ifelse(x$logFC>0,"red","blue"),"black")
+  } 
+```
+
+# FIGURE 1E - MACROPHAGE MARKERS HEATMAP. Numbers in the object names of the genes lists are PMID of the source publication. Create a heatmap and barplot to visualize the differences of cell type specific markers between old and new protocols
+```{r fig.height=6}
+#Numbers in the object names of the genes lists are PMID of the source publication
+macrophagegenes24162652 <- c("FN1","SYTL1","SAA3","PRG4","CFP","CD5L","GM11428","CRIP1","PF4","ALOX15","ECM1","THBS1","EMILIN2","C4B","RETNLA","FABP4","F5","EDNRB","ICAM2","FCNA","AHNAK","PTGIS","CXCL13","SERPINB2","MSR1")
+macrophagegenes32259484 <- c("PF4","MRC1","FTL1","SEPP1","F13A1","DAB2","LYVE1","STAB1","MS4A4A","TRF")  #Added Jan 2022
+macrophagemarkers <- c(macrophagegenes24162652,macrophagegenes32259484)
+
+#Most mature samples only
+macrophagedataX2 <- mydataX2[mydataX2$genes$Gene_Symbol %in% macrophagemarkers,] # Extract only macrophage genes from the original dataset
+macrophage_logCPM_X2 <- cpm(macrophagedataX2, log=TRUE) # Transform counts to log2 CPM in a matrix format needed for heatmap
+macrophage_logCPM_X2scaled <- t(scale(t(macrophage_logCPM_X2))) #Scaling each gene by row
+rownames(macrophage_logCPM_X2) <- macrophagedataX2$genes$Gene_Symbol
+rownames(macrophage_logCPM_X2scaled) <- macrophagedataX2$genes$Gene_Symbol
+
+#tiff("./Differentiation Protocol comparison/NEW vs OLD protocol paper/macrophage heatmap unscaled - Fig1E.tif", units="in", width=12, height=10, res=300, compression="lzw")
+pheatmap(macrophage_logCPM_X2,labels_col=c("microglia OLD-58", "microglia OLD-66", "microglia NEW-45", "microglia NEW-44+46"), fontsize_row=10, fontsize_col=12, main="Macrophage markers without scaling (logCPM heatmap)", fontsize=12, cluster_cols = F, border_color = NA, cellwidth=40, cellheight=12, display_numbers = round(macrophage_logCPM_X2,2)) 
+#dev.off()
+
+```
+
+# FIGURE 2A, 2B, 4B, 4C - Functional anlaysis with DAVID, using the online platform - separate the up and downregulated gene lists for analysis, which is a more powerful method than a combined analysis with all DEGs (https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3899863/)
+```{r}
+#To list the significantly up/downregulated genes generated by decideTests() 
+DEGsX2 <- decideTestsDGE(QLFtestX2)
+upregX2 <- which(DEGsX2[,1]==1)
+upregX2 <- DEGsX2[upregX2,]
+upreg_genesX2 <- QLFtestX2$genes[rownames(upregX2), "Gene_Symbol"]
+head(upreg_genesX2)
+
+downregX2 <- which(DEGsX2[,1]==-1)
+downregX2 <- DEGsX2[downregX2,]
+downreg_genesX2 <-QLFtestX2$genes[rownames(downregX2), "Gene_Symbol"]
+head(downreg_genesX2)
+
+nonsigX2 <- which(DEGsX2[,1]==0)
+nonsigX2 <- DEGsX2[nonsigX2,]
+nonsig_genesX2 <-QLFtestX2$genes[rownames(nonsigX2), "ENSEMBL_ID"]
+head(nonsig_genesX2)
+
+#Use the code below to create a gene list separated by commas that you can copy paste into the text box provided in DAVID.
+upreg_genesX2 <- paste(as.character(upreg_genesX2), collapse=", ")
+downreg_genesX2 <- paste(as.character(downreg_genesX2), collapse=", ")
+
+```
+
+# FIGURE 1D - Uploading and processing open source RNAseq data for iPSCs and iMNs (induced motor neurons) from LINCS Data Portal, and RNAseq data from C20 microglia (human immortalized microglia cell line) from DEE2 Repository. To compare to CS52old and CS52 new isogenic samples from Batch 1, here I am also uploading and processing all other CS52old and CS52new isogenic samples to date April 2021 (namely, CS52old isogenic samples from Batch 2 and 3, and CS52new isogenic samples from Batch 2)
+```{r}
+#Formatting readcount data
+  iMNcounts <- read.csv("./Open Source RNAseq data/LINCS Data Portal/LINCSdataportal_iMNs_RNAseq_LDS1398.csv")
+iMNcounts <- iMNcounts[,c(1:7,10:11,14:15)]
+colnames(iMNcounts) <- c("ENSEMBL_ID","iMN_Ctrl1A","iMN_Ctrl1B","iMN_Ctrl2A","iMN_Ctrl2B","iMN_Ctrl3A","iMN_Ctrl3B","iMN_CS29patA","iMN_CS29patB","iMN_CS52patA","iMNCS52patB")
+head(iMNcounts)
+
+  iPSCcounts <- read.csv("./Open Source RNAseq data/LINCS Data Portal/LINCSdataportal_iPSC_RNAseq_LDS1355.csv")
+iPSCcounts <- iPSCcounts[,c(1:7,10:15)]
+colnames(iPSCcounts) <- c("ENSEMBL_ID","iPSC_Ctrl1A","iPSC_Ctrl1B","iPSC_Ctrl1C","iPSC_Ctrl2A","iPSC_Ctrl2B","iPSC_Ctrl2C","iPSC_CS29patA","iPSC_CS29patB","iPSC_CS29patC","iPSC_CS52patA","iPSC_CS52patB","iPSC_CS52patC")
+head(iPSCcounts)
+
+  C20microgliacounts <- readr::read_tsv("./Open Source RNAseq data/DEE2 Repository/Human immortalized microglia Data/GeneCountMatrix.tsv", col_types = "cii") #for read_tsv(), the col_types argument specifies the class of each column in the df. In this case the columns would be of class character, integer, integer)
+colnames(C20microgliacounts) <- c("ENSEMBL_ID","Ctrl_C20_microglia","TNF-treated_C20_microglia")
+head(C20microgliacounts)
+
+  CS52batch1_counts <- read.delim("./DSP875_summary_star_genes_readcount.stranded.annotated.genelength.tsv")
+CS52batch1_counts <- CS52batch1_counts[-c(1:4),c(6,7,3,2,5,4)]
+colnames(CS52batch1_counts) <- c("ENSEMBL_ID","Gene_Symbol","CS52_OLD_iso1_D48","CS52_NEW_iso1_D42","CS52_OLD_pat1_D48","CS52_NEW_pat1_D36") #batch1-NEW-iso is confirmed to be Day42 - column title in raw data says D32 which is incorrect as sample was labeled incorrectly upon submission for sequencing
+CS52batch1_counts$ENSEMBL_ID <- gsub("\\..*","",CS52batch1_counts$ENSEMBL_ID)
+head(CS52batch1_counts)
+
+  CS52batch2_counts <- read.delim("./DSP969_summary_star_genes_readcount.stranded.annotated.genelength.tsv")
+CS52batch2_counts <- CS52batch2_counts[-c(1:4),c(8,9,7,6,5,4)]
+colnames(CS52batch2_counts) <- c("ENSEMBL_ID","Gene_Symbol","CS52_OLD_iso2_D58","CS52_NEW_iso2_D45","CS52_OLD_pat2_D58","CS52_NEW_pat2_D45")
+CS52batch2_counts$ENSEMBL_ID <- gsub("\\..*","",CS52batch2_counts$ENSEMBL_ID)
+head(CS52batch2_counts)
+
+  CS52batch3_counts <- read.delim("./DSP1038_summary_star_genes_readcount.stranded.annotated.genelength.tsv")
+CS52batch3_counts <- CS52batch3_counts[-c(1:4),c(14,15,13,12,10,9)]
+colnames(CS52batch3_counts) <- c("ENSEMBL_ID","Gene_Symbol","CS52_OLD_isoUNT3_D45","CS52_OLD_isoSCR3_D45","CS52_OLD_patUNT3_D45","CS52_OLD_patSCR3_D45")
+CS52batch3_counts$ENSEMBL_ID <- gsub("\\..*","",CS52batch3_counts$ENSEMBL_ID)
+head(CS52batch3_counts)
+
+  CS52batch4_counts <- read.delim("./DSP1120_summary_star_genes_readcount.stranded.annotated.genelength.tsv")
+CS52batch4_counts <- CS52batch4_counts[-c(1:4),c(16,17,12,14,10,13,15,11)]
+colnames(CS52batch4_counts) <- c("ENSEMBL_ID","Gene_Symbol","CS52_OLD_iso4_D62","CS52_OLD_iso4_D66","CS52_NEW_iso4_D44.46","CS52_OLD_pat4_D62","CS52_OLD_pat4_D66","CS52_NEW_pat4_D44.46")
+CS52batch4_counts$ENSEMBL_ID <- gsub("\\..*","",CS52batch4_counts$ENSEMBL_ID)
+head(CS52batch4_counts)
+
+#Combine iPSC, C20 microglia, and CS52 control samples into a single dataframe
+COMBINED_ctrls <- merge(iPSCcounts[c(1,2,5)],C20microgliacounts[c(1:2)],all.x=T)
+COMBINED_ctrls <- merge(COMBINED_ctrls,CS52batch1_counts[1:4], all.x=T)
+COMBINED_ctrls <- merge(COMBINED_ctrls,CS52batch2_counts[1:4], all.x=T)
+COMBINED_ctrls <- merge(COMBINED_ctrls,CS52batch3_counts[1:3], all.x=T)
+COMBINED_ctrls <- merge(COMBINED_ctrls,CS52batch4_counts[1:5], all.x=T)
+colnames(COMBINED_ctrls)
+
+#There are lots of NA values in COMBINED df because many genes do not overlap between iPSC and iMG datasets. Set NA=0 to show that these genes do not appear, aka gene expression = 0.
+COMBINED_ctrls[is.na(COMBINED_ctrls)] <- 0
+COMBINED_Fig1D <- COMBINED_ctrls[,c(1:5,10,12,7,13)] #least and most mature samples
+
+#Creating sample groups and edgeR object
+COMBINED_Fig1D_group <- factor(c(rep("iPSC",times=2),"C20",rep("OLD",times=2),rep("NEW",times=2)))
+COMBINED_Fig1D_data <- relevel(COMBINED_Fig1D_group,"iPSC")
+COMBINED_Fig1D_data <- DGEList(counts=COMBINED_Fig1D[,3:9], genes=COMBINED_Fig1D[,1:2], group=COMBINED_Fig1D_group)
+  
+#Filtering
+keep <- filterByExpr(COMBINED_Fig1D_data)
+COMBINED_Fig1D_data <- COMBINED_Fig1D_data[keep, , keep.lib.sizes=FALSE]
+  
+#Normalization
+COMBINED_Fig1D_data <- calcNormFactors(COMBINED_Fig1D_data, method="TMM")
+COMBINED_Fig1D_data$samples
+  
+```
+
+# FIGURE 1D - MICROGLIA MARKERS HEATMAP. Numbers in the object names of the genes lists are PMID of the source publication. Create a heatmap and barplot to visualize the differences of cell type specific markers between old and new protocols
+```{r fig.height=6}
+#This microglia marker list was previously created in this script
+microgliamarkerlist <- c(microgliagenes24162652,microgliagenes24316888,microgliagenes27668937, microgliagenes25186741, Stefano_added, microgliagenes24162652_more)
+
+microgliamarkers_Fig1D_data <- COMBINED_Fig1D_data[COMBINED_Fig1D_data$genes$Gene_Symbol %in% microgliamarkerlist,] # Extract only macrophage genes and desired sample columns from the original dataset
+microgliamarkers_Fig1D_cpm <- cpm(microgliamarkers_Fig1D_data, log=TRUE) # Transform counts to log2 CPM in a matrix format needed for heatmap
+rownames(microgliamarkers_Fig1D_cpm) <- microgliamarkers_Fig1D_data$genes$Gene_Symbol
+
+#tiff("./Differentiation Protocol comparison/NEW vs OLD protocol paper/microgliamarkers_Fig1D heatmap.tif", units="in", width=12, height=10, res=300, compression="lzw")
+pheatmap(microgliamarkers_Fig1D_cpm,labels_col=c("iPSC line #1", "iPSC line #2", "microglia cell line C20", "microglia OLD-45", "microglia OLD-66", "microglia NEW-42", "microglia NEW-44+46"), fontsize_row=10, fontsize_col=12, main="Microglia markers without scaling (logCPM heatmap)", fontsize=12, cluster_cols = F, border_color = NA, cellwidth=40, cellheight=12, display_numbers = round(microgliamarkers_Fig1D_cpm,2))  
+#dev.off()
+
+```
+
+# FIGURE 3A - PMID 26780511 Grabert et al reported microglial clusters that are region-dependent (spatial heterogeneity). Checking if these are represented in CS52 NEW or OLD microglia. Note that NEW = McQuade and OLD = Douvaras
+```{r}
+
+library(GeneOverlap)
+downreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC<0]
+upreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC>0]
+total <- sum(decideTestsobjX2[1:3,])
+
+#The gene lists were downloaded from Grabert et al and saved again as individual .rds files. These files are then loaded to this script for analysis. 
+MGcluster1 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID26780511 MG subtypes/MGcluster1.rds")
+MGcluster2 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID26780511 MG subtypes/MGcluster2.rds")
+MGcluster3 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID26780511 MG subtypes/MGcluster3.rds")
+
+barplotdata <- as.data.frame(topTags(QLFtestX2, n=sum(decideTestsobjX2[c(1,2,3),]), sort.by="PValue"))
+
+par(mar=c(8,4,4,2)+0.1, xpd=TRUE) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+
+MGcluster1_logFC <- barplotdata[barplotdata$Gene_Symbol %in% MGcluster1,c(2,4,8)]
+
+  MGcluster1_barplot1 <- barplot(MGcluster1_logFC$logFC, names.arg=MGcluster1_logFC$Gene_Symbol, main="Expression of MGcluster1 (PMID 26780511) in NEW vs OLD protocol", border="NA", col=red_upreg_blue_downreg_blk_ns(MGcluster1_logFC), xlab="Log Fold Change (logFC)", las=1, cex.axis=3, cex.names=0.5, cex.lab=1.2,horiz = TRUE, xlim = c(-10,10), width=rep(60,times=nrow(MGcluster1_logFC)))
+ 
+MGcluster2_logFC <- barplotdata[barplotdata$Gene_Symbol %in% MGcluster2,c(2,4,8)]
+
+  MGcluster2_barplot1 <- barplot(MGcluster2_logFC$logFC, names.arg=MGcluster2_logFC$Gene_Symbol, main="Expression of MGcluster2 (PMID 26780511) in NEW vs OLD protocol", border="NA", col=red_upreg_blue_downreg_blk_ns(MGcluster2_logFC), xlab="Log Fold Change (logFC)", las=1, cex.axis=3, cex.names=0.5, cex.lab=1.2,horiz = TRUE, xlim = c(-10,10), width=rep(60,times=nrow(MGcluster2_logFC)))
+ 
+MGcluster3_logFC <- barplotdata[barplotdata$Gene_Symbol %in% MGcluster3,c(2,4,8)]
+
+  MGcluster3_barplot1 <- barplot(MGcluster3_logFC$logFC, names.arg=MGcluster3_logFC$Gene_Symbol, main="Expression of MGcluster3 (PMID 26780511) in NEW vs OLD protocol", col=red_upreg_blue_downreg_blk_ns(MGcluster3_logFC), border="NA", ylab="Log Fold Change (logFC)", las=2, cex.axis=1.2, cex.names=0.5, cex.lab=1.5)
+
+  #Is Grabert MGcluster1 significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol). 
+paste("Is MGcluster1 significantly enriched in OLD microglia?")
+overlap_MGcluster1.OLD <- newGeneOverlap(MGcluster1,downreg_genes,total)
+overlap_MGcluster1.OLD <- testGeneOverlap(overlap_MGcluster1.OLD)
+overlap_MGcluster1.OLD
+overlap_MGcluster1.OLD_allstats <- print(overlap_MGcluster1.OLD)
+paste("================================================")
+#Is MGcluster1 significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is MGcluster1 significantly enriched in NEW microglia?")
+overlap_MGcluster1.NEW <- newGeneOverlap(MGcluster1,upreg_genes,total)
+overlap_MGcluster1.NEW <- testGeneOverlap(overlap_MGcluster1.NEW)
+overlap_MGcluster1.NEW
+overlap_MGcluster1.NEW_allstats <- print(overlap_MGcluster1.NEW)
+paste("================================================")
+paste("================================================")
+
+#Is Grabert MGcluster2 significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol). 
+paste("Is MGcluster2 significantly enriched in OLD microglia?")
+overlap_MGcluster2.OLD <- newGeneOverlap(MGcluster2,downreg_genes,total)
+overlap_MGcluster2.OLD <- testGeneOverlap(overlap_MGcluster2.OLD)
+overlap_MGcluster2.OLD
+overlap_MGcluster2.OLD_allstats <- print(overlap_MGcluster2.OLD)
+paste("================================================")
+#Is MGcluster2 significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is MGcluster2 significantly enriched in NEW microglia?")
+overlap_MGcluster2.NEW <- newGeneOverlap(MGcluster2,upreg_genes,total)
+overlap_MGcluster2.NEW <- testGeneOverlap(overlap_MGcluster2.NEW)
+overlap_MGcluster2.NEW
+overlap_MGcluster2.NEW_allstats <- print(overlap_MGcluster2.NEW)
+paste("================================================")
+paste("================================================")
+
+#Is Grabert MGcluster3 significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol). 
+paste("Is MGcluster3 significantly enriched in OLD microglia?")
+overlap_MGcluster3.OLD <- newGeneOverlap(MGcluster3,downreg_genes,total)
+overlap_MGcluster3.OLD <- testGeneOverlap(overlap_MGcluster3.OLD)
+overlap_MGcluster3.OLD
+overlap_MGcluster3.OLD_allstats <- print(overlap_MGcluster3.OLD)
+paste("================================================")
+#Is MGcluster3 significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is MGcluster3 significantly enriched in NEW microglia?")
+overlap_MGcluster3.NEW <- newGeneOverlap(MGcluster3,upreg_genes,total)
+overlap_MGcluster3.NEW <- testGeneOverlap(overlap_MGcluster3.NEW)
+overlap_MGcluster3.NEW
+overlap_MGcluster3.NEW_allstats <- print(overlap_MGcluster3.NEW)
+paste("================================================")
+paste("================================================")
+
+```
+
+
+# PMID 30948552 Maniatis et al identified 28 spatiotemporal cell populations from human. Note that these cell populations include but are not restricted to microglia populations. Check if human MG modules from PMID 30948552 are represented in CS52 NEW or OLD microglia. Note that "OLD" = Douvaras microglia and "NEW" = McQuade microglia
+```{r}
+#The gene lists were downloaded from Maniatis et al, subsetted into the "modules", and saved again as individual .rds files. These files are then loaded to this script for analysis. 
+
+humanModule1 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule1.rds")
+humanModule2 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule2.rds")
+humanModule3 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule3.rds")
+humanModule4 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule4.rds")
+humanModule5 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule5.rds")
+humanModule6 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule6.rds")
+humanModule7 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule7.rds")
+humanModule8 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule8.rds")
+humanModule9 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule9.rds")
+humanModule10 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule10.rds")
+humanModule11 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule11.rds")
+humanModule12 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule12.rds")
+humanModule13 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule13.rds")
+humanModule14 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule14.rds")
+humanModule15 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule15.rds")
+humanModule16 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule16.rds")
+humanModule17 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule17.rds")
+humanModule18 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule18.rds")
+humanModule19 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule19.rds")
+humanModule20 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule20.rds")
+humanModule21 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule21.rds")
+humanModule22 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule22.rds")
+humanModule23 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule23.rds")
+humanModule24 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule24.rds")
+humanModule25 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule25.rds")
+humanModule26 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule26.rds")
+humanModule27 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule27.rds")
+humanModule28 <- readRDS(file="./ALS Patient vs Isogenic microglia comparison/PMID30948552 MG subtypes/humanModule28.rds")
+```
+
+# FIGURE 3B - GeneOverlap heatmap
+```{r}
+#First create named lists with the sets of gene signatures to compare
+
+maniatis_list_ALL <- list(Module1=humanModule1,Module2=humanModule2, Module3=humanModule3,Module4=humanModule4, Module5=humanModule5, Module6=humanModule6,Module7=humanModule7, Module8=humanModule8, Module9=humanModule9,  Module10=humanModule10, Module11=humanModule11,Module12=humanModule12, Module13=humanModule13,Module14=humanModule14, Module15=humanModule15, Module16=humanModule16,Module17=humanModule17, Module18=humanModule18, Module19=humanModule19,Module20=humanModule20, Module21=humanModule21, Module22=humanModule22, Module23=humanModule23, Module24=humanModule24,Module25=humanModule25,Module26=humanModule26, Module27=humanModule27, Module28=humanModule28)
+
+downreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC<0]
+upreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC>0]
+total <- sum(decideTestsobjX2[1:3,])
+
+CS52MG_list <- list(McQuade_microglia=upreg_genes,Douvaras_microglia=downreg_genes)
+
+gom.obj <- newGOM(maniatis_list_ALL,CS52MG_list,total)
+print(gom.obj)
+
+tiff("./Protocol comparison/NEW vs OLD protocol paper/Maniatis_ALL GeneOverlap heatmap OddsRatio_LZWcomp.tif", units="in", width=12, height=10, res=300,compression="lzw") 
+drawHeatmap(gom.obj,what="odds.ratio",adj.p=T, grid.col="Reds", note.col="black") # "odds.ratio" depicts the degree of association, effectively the odds of a significant intersection between two gene lists.   
+dev.off()
+
+```
+
+# FIGURE 3C - Making barplots of Maniatis human module 2 and 24, and determining statistical significance by Fisher's Exact test. Note that device margins may prevent the plot from displaying correctly in R, but it will display correctly when exported as an image file.
+```{r}
+barplotdata <- as.data.frame(topTags(QLFtestX2, n=sum(decideTestsobjX2[c(1,2,3),]), sort.by="PValue"))
+
+par(mar=c(8,4,4,2)+0.1, xpd=TRUE, mfrow=c(1,1)) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+
+humanModule2_logFC <- barplotdata[barplotdata$Gene_Symbol %in% humanModule2,c(2,4,8)]
+humanModule2_barplot1 <- barplot(humanModule2_logFC$logFC, names.arg=humanModule2_logFC$Gene_Symbol, main="Expression of human Module2 (PMID 30948552) in New vs Old protocol", col=red_upreg_blue_downreg_blk_ns(humanModule2_logFC), border="NA", xlab="Log Fold Change (logFC)", las=1, cex.axis=3, cex.names=0.6, cex.lab=1.5,horiz = TRUE, xlim = c(-11,10), width=rep(60,times=nrow(humanModule2_logFC)))
+
+  humanModule24_logFC <- barplotdata[barplotdata$Gene_Symbol %in% humanModule24,c(2,4,8)]
+humanModule24_barplot1 <- barplot(humanModule24_logFC$logFC, names.arg=humanModule24_logFC$Gene_Symbol, main="Expression of human Module24 (PMID 30948552) in New vs Old protocol", col=red_upreg_blue_downreg_blk_ns(humanModule24_logFC), border="NA", xlab="Log Fold Change (logFC)", las=1, cex.axis=3, cex.names=0.6, cex.lab=1.5,horiz = TRUE, xlim = c(-10,10), width=rep(60,times=nrow(humanModule24_logFC)))
+  
+  #Is the overlap between the OLD vs NEW DEGs and Maniatis human modules significant? Use the Fishers exact test to check this
+
+  library(GeneOverlap)
+downreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC<0]
+upreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC>0]
+total <- sum(decideTestsobjX2[1:3,])
+
+#Is humanModule2 significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol)
+paste("Is humanModule2 significantly enriched in OLD microglia?")
+overlap_humanModule2.OLD <- newGeneOverlap(humanModule2,downreg_genes,total)
+overlap_humanModule2.OLD <- testGeneOverlap(overlap_humanModule2.OLD)
+overlap_humanModule2.OLD
+overlap_humanModule2.OLD_allstats <- print(overlap_humanModule2.OLD)
+paste("================================================")
+#Is humanModule2 significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is humanModule2 significantly enriched in NEW microglia?")
+overlap_humanModule2.NEW <- newGeneOverlap(humanModule2,upreg_genes,total)
+overlap_humanModule2.NEW <- testGeneOverlap(overlap_humanModule2.NEW)
+overlap_humanModule2.NEW
+overlap_humanModule2.NEW_allstats <- print(overlap_humanModule2.NEW)
+paste("================================================")
+paste("================================================")
+
+#Is humanModule24 significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol)
+paste("Is humanModule24 significantly enriched in OLD microglia?")
+overlap_humanModule24.OLD <- newGeneOverlap(humanModule24,downreg_genes,total)
+overlap_humanModule24.OLD <- testGeneOverlap(overlap_humanModule24.OLD)
+overlap_humanModule24.OLD
+overlap_humanModule24.OLD_allstats <- print(overlap_humanModule24.OLD)
+paste("================================================")
+#Is humanModule24 significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is humanModule24 significantly enriched in NEW microglia?")
+overlap_humanModule24.NEW <- newGeneOverlap(humanModule24,upreg_genes,total)
+overlap_humanModule24.NEW <- testGeneOverlap(overlap_humanModule24.NEW)
+overlap_humanModule24.NEW
+overlap_humanModule24.NEW_allstats <- print(overlap_humanModule24.NEW)
+paste("================================================")
+paste("================================================")
+
+```
+
+# FIGURE 4A - PMID 33606969 Safaiyan et al reports 212 DEGs between white matter (WAMs) and gray matter microglia. Are these populations represented in CS52 microglia OLD or NEW? Make barplots and run stats
+```{r}
+
+ WAMgenes <- scan(text="ANXA2
+ANXA5
+APOE
+ATP6V0C
+B2M
+C1QB
+CAPG
+CD52
+CD63
+CD63-PS
+CD74
+CLEC7A
+CRIP1
+CST7
+CTSB
+CTSS
+CTSZ
+CYBB
+FAM20C
+FTH1
+FTL1
+FTL1-PS1
+FTL1-PS2
+GM12164
+GM7541
+H2-D1
+H2-K1
+IFITM3
+LGALS1
+LGALS3
+LYZ2
+MIR692-1
+SPP1
+TSPO
+VIM
+CT010467.1
+EEF1A1
+EEF1B2
+EEF2
+FAU
+GM10076
+GM10269
+GM10443
+GM10736
+GM14303
+GM2000
+GM23935
+GM3511
+GM5735
+GM7618
+LARS2
+MIR6236
+MT-CO1
+MT-CYTB
+MT-RNR2
+RPL10
+RPL13
+RPL14
+RPL17
+RPL18A
+RPL21
+RPL27A
+RPL28
+RPL31
+RPL32
+RPL35
+RPL36
+RPL37
+RPL37A
+RPL38
+RPL41
+RPL5
+RPL9
+RPLP0
+RPLP1
+RPLP2
+RPS10-PS2
+RPS11
+RPS14
+RPS16
+RPS17
+RPS18
+RPS19
+RPS23
+RPS25
+RPS27
+RPS27A
+RPS28
+RPS29
+RPS3
+RPS6
+RPS9
+RPSA
+TMSB4X
+AK1
+ALDOA
+ARF3
+ARL2
+ARL8A
+ATP5B
+ATP5D
+ATP5E
+ATP5G1
+ATP5G2
+ATP5G3
+ATP5H
+ATP5J2
+ATP5O
+CALM1
+CDC37
+CHCHD2
+COX4I1
+COX5B
+COX6B1
+COX7A2
+COX7B
+CYBA
+EIF1
+ENO1
+EWSR1
+FCER1G
+FKBP8
+GABARAP
+GAPDH
+GAS5
+GLRX3
+GM10123
+GPI1
+GPX1
+GPX4
+HCFC1R1
+HINT1
+KARS
+MBP
+MIF
+MPC1
+MRFAP1
+MYL12B
+MYL6
+NDUFB7
+NDUFS5
+NDUFS7
+NPC1
+NUTF2
+OAZ2
+PARK7
+PDHB
+PEBP1
+PKM
+PPIA
+PRDX1
+PRDX5
+PSMB2
+PSMB4
+PTMA
+RAN
+RHOBTB1
+RNH1
+RPS27L
+SDC4
+SH3BGRL3
+SLC25A3
+SLC25A4
+SNX3
+SOD1
+SRP14
+SRPK1
+STUB1
+TECPR1
+TMEM256
+TOMM7
+TPI1
+TUBB4B
+TWF1
+TYROBP
+UBB
+UBL5
+UQCR10
+UQCR11
+UQCRQ
+YBX1
+1700017B05RIK
+CCR5
+CD164
+CMTM6
+CSF1R
+CX3CR1
+ECSCR
+FCRLS
+GPR34
+HEXB
+IFNGR1
+LAPTM5
+LDHB
+LGMN
+LPCAT2
+LRRC3
+MGAT4A
+OLFML3
+P2RY12
+P2RY13
+PTGS1
+SELPLG
+SIGLECH
+SIRPA
+SLC2A5
+SRGAP2
+TMEM119
+UBQLN1
+UPK1B
+VDAC1
+VSIR
+",what="")
+WAMgenes <- dput(WAMgenes)
+ 
+ #The gene list above can be saved as an individual .rds file, and then loaded into any R script for analysis. 
+saveRDS(WAMgenes,"./PMID 33606969 MG subtype/WAMgenes.rds")
+WAMgenes <- readRDS(file="./PMID 33606969 MG subtype/WAMgenes.rds")
+
+barplotdata <- as.data.frame(topTags(QLFtestX2, n=sum(decideTestsobjX2[c(1,2,3),]), sort.by="PValue"))
+
+par(mar=c(8,4,4,2)+0.1, xpd=TRUE, mfrow=c(1,1)) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+
+WAMgenes_logFC <- barplotdata[barplotdata$Gene_Symbol %in% WAMgenes,c(2,4,8)]
+WAMgenes_barplot <- barplot(WAMgenes_logFC$logFC, names.arg=WAMgenes_logFC$Gene_Symbol, main="Expression of White matter associated microglia (WAM) genes (PMID 33606969) in New vs Old protocol", col=red_upreg_blue_downreg_blk_ns(WAMgenes_logFC), border="NA", xlab="Log Fold Change (logFC)", las=1, cex.axis=2, cex.names=0.6, cex.lab=1.5,horiz = TRUE, xlim = c(-10,10))#width=rep(60,times=nrow(humanModule10_logFC)))
+  WAMgenes_barplot
+
+library(GeneOverlap)
+downreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC<0]
+upreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC>0]
+total <- sum(decideTestsobjX2[1:3,])
+
+#Is WAM gene sig significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol)
+paste("Is WAM gene sig significantly enriched in OLD microglia?")
+overlap_WAMgenes.OLD <- newGeneOverlap(WAMgenes,downreg_genes,total)
+overlap_WAMgenes.OLD <- testGeneOverlap(overlap_WAMgenes.OLD)
+overlap_WAMgenes.OLD
+overlap_WAMgenes.OLD_allstats <- print(overlap_WAMgenes.OLD)
+paste("================================================")
+#Is WAM gene sig significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is WAM gene sig significantly enriched in NEW microglia?")
+overlap_WAMgenes.NEW <- newGeneOverlap(WAMgenes,upreg_genes,total)
+overlap_WAMgenes.NEW <- testGeneOverlap(overlap_WAMgenes.NEW)
+overlap_WAMgenes.NEW
+overlap_WAMgenes.NEW_allstats <- print(overlap_WAMgenes.NEW)
+paste("================================================")
+paste("================================================")
+
+```
+
+# FIGURE 5A - Genetic signatures of microglial subtypes (PMID 31276795 - Dachet et al). Are these populations represented in CS52 microglia OLD or NEW? Make barplots and run stats
+```{r, echo=FALSE}
+barplotdata <- as.data.frame(topTags(QLFtestX2, n=sum(decideTestsobjX2[c(1,2,3),]), sort.by="PValue"))
+
+MGtype1 <- scan(text="A2M
+ABCB1
+APOD
+C7
+CALCRL
+CASP8
+CDCA7L
+CFH
+COBLL1
+COL12A1
+COL1A2
+COL6A3
+CXCR4
+CYBRD1
+CYP1B1
+CYR61
+DCN
+DSE
+EFEMP1
+FBLN1
+FN1
+GSN
+GYPC
+HDAC1
+IFI44
+ITGBL1
+ITIH5
+KCTD12
+LAMA2
+LAMA4
+LEF1
+LTBP1
+LTBP2
+MATN2
+MEF2C
+NEDD9
+NFASC
+NOTCH2
+NR2F1
+PARP14
+PDGFRA
+PLXND1
+PTBP1
+PTGDS
+PTN
+PTPN13
+TJP1
+TRIM38
+TXNIP
+UTRN
+VIM
+VPS13C
+WWTR1", what="")
+MGtype1 <- dput(MGtype1)
+
+MGtype2 <- scan(text="ABCA8	TMEM123
+ADIPOR2	TOP2B
+AEBP1	TREM2
+ALDH1A1	TRIP6
+ANTXR1	VCAM1
+ANXA1	VCAN
+ASH1L	XRN1
+C4A	YAP1
+CCND2	YTHDC1
+CD74	ZEB2
+CDC14A	ZHX2
+CETN3	
+CHN2	
+CSRP1	
+CTNNA3	
+CYBRD1	
+DDR2	
+DHRS3	
+DST	
+EPB41L2	
+EPS8	
+ERBB2IP	
+ETS1	
+FAM198B	
+FYB	
+GIMAP4	
+GJA1	
+GMFG	
+GOLIM4	
+GPR177	
+GRAMD3	
+GSTM5	
+HERC5	
+HLA-DPA1	
+HLA-DPB1	
+HLA-DRA	
+JAM2	
+KCTD12	
+MARCKS	
+MOCS1	
+MXI1	
+MYO6	
+NKTR	
+PCAF	
+PCDH18	
+PRDM5	
+PRKD3	
+PRKG1	
+PTGDS	
+PYHIN1	
+QKI	
+RARRES3	
+RBP1	
+RFTN2	
+ROBO3	
+RSRP1	
+SASH1	
+SEPP1	
+SERBP1	
+SLC1A3	
+SLC40A1	
+SLC7A2	
+SPARC	
+SULT1C4", what="")
+MGtype2 <- dput(MGtype2)
+
+#The gene lists above can be saved as an individual .rds files, and then loaded into any R script for analysis. 
+saveRDS(MGtype1,"./PMID 31276795 MG subtype/MGtype1.rds")
+saveRDS(MGtype2,"./PMID 31276795 MG subtype/MGtype2.rds")
+
+MGtype1 <- readRDS(file="./PMID 31276795 MG subtype/MGtype1.rds")
+MGtype2 <- readRDS(file="./PMID 31276795 MG subtype/MGtype2.rds")
+
+#Can PMID 31276795 Dachet MG subtype 1 or MG subtype 2 signatures be found in either of our cultures (OLD or NEW)? Make barplots of full gene signature for each MG subtype
+
+par(mar=c(4,8,0.5,5)+0.1, xpd=TRUE, oma=c(0,0,0,0)) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+   MGtype1_logFC <- barplotdata[barplotdata$Gene_Symbol %in% MGtype1,c(2,4,8)]
+MGtype1_barplotALL <- barplot(MGtype1_logFC$logFC, names.arg=MGtype1_logFC$Gene_Symbol, col=red_upreg_blue_downreg_blk_ns(MGtype1_logFC), main="Expression of MG subtype 1 (PMID 31276795) in New vs Old protocol", xlab="Log Fold Change (logFC)", border="white", las=1, cex.axis=2, cex.names=1, cex.lab=1.5, horiz = TRUE, xlim = c(-10,10))
+MGtype1_barplotALL
+
+ MGtype2_logFC <- barplotdata[barplotdata$Gene_Symbol %in% MGtype2,c(2,4,8)]
+par(mar=c(4,4,0.5,5)+0.1, xpd=TRUE, oma=c(0,0,0,0)) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+MGtype2_barplotALL <- barplot(MGtype2_logFC$logFC, names.arg=MGtype2_logFC$Gene_Symbol, col=red_upreg_blue_downreg_blk_ns(MGtype2_logFC), main="Expression of MG subtype 2 (PMID 31276795) in New vs Old protocol", xlab="Log Fold Change (logFC)", border="white", las=1, cex.axis=1.2, cex.names=0.8, cex.lab=1.5, horiz = TRUE, xlim = c(-10,10), width=rep(60,times=nrow(MGtype2_logFC))) MGtype2_barplotALL
+
+#Is the overlap between the OLD vs NEW DEGs and Dachet MG types significant? Use the Fishers exact test to check this
+
+library(GeneOverlap)
+downreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC<0]
+upreg_genes <- topTagsX2$Gene_Symbol[topTagsX2$logFC>0]
+total <- sum(decideTestsobjX2[1:3,])
+
+#Is MGtype1 significantly enriched in OLD microglia? Compare MGtype1 to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol)
+overlap_MGtype1.OLD <- newGeneOverlap(MGtype1,downreg_genes,total)
+overlap_MGtype1.OLD <- testGeneOverlap(overlap_MGtype1.OLD)
+overlap_MGtype1.OLD
+overlap_MGtype1.OLD_allstats <- print(overlap_MGtype1.OLD)
+paste("================================================")
+#Is MGtype1 significantly enriched in NEW microglia? Compare MGtype1 to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+overlap_MGtype1.NEW <- newGeneOverlap(MGtype1,upreg_genes,total)
+overlap_MGtype1.NEW <- testGeneOverlap(overlap_MGtype1.NEW)
+overlap_MGtype1.NEW
+overlap_MGtype1.NEW_allstats <- print(overlap_MGtype1.NEW)
+paste("================================================")
+
+#Is MGtype2 significantly enriched in OLD microglia? Compare MGtype1 to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol)
+overlap_MGtype2.OLD <- newGeneOverlap(MGtype2,downreg_genes,total)
+overlap_MGtype2.OLD <- testGeneOverlap(overlap_MGtype2.OLD)
+overlap_MGtype2.OLD
+overlap_MGtype2.OLD_allstats <- print(overlap_MGtype2.OLD)
+paste("================================================")
+#Is MGtype2 significantly enriched in NEW microglia? Compare MGtype1 to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+overlap_MGtype2.NEW <- newGeneOverlap(MGtype2,upreg_genes,total)
+overlap_MGtype2.NEW <- testGeneOverlap(overlap_MGtype2.NEW)
+overlap_MGtype2.NEW
+overlap_MGtype2.NEW_allstats <- print(overlap_MGtype2.NEW)
+```
+
+# FIGURE 5B - Keren-Shaul et al identifies disease-associated microglia (DAM) and provided a list of DEGs between DAM and homeostatic microglia in ALS spinal cord. From the excel sheet of Keren-Shaul's Table S6 (~34k genes), I deleted all the rows with FC=0 (leaving 15kgenes) and all rows with Pvalue>0.05 (leaving 5k genes). DAM DEGs as those with FC>0 (~1000 genes) and homeostatic genes as those with FC<0 (~4k genes).
+```{r}
+DAMgenes_DF <- read.table(file="./Differentiation Protocol comparison/Keren-Shaul et al_Table S6_DAM genes only.csv", header=TRUE, sep=",")
+DAMgenes_DF <- DAMgenes_DF[order(DAMgenes_DF$X.log10.p.value.,decreasing = T),]
+head(DAMgenes_DF)
+
+DAMgenes <- DAMgenes_DF$NAME
+head(DAMgenes)
+
+# Making barplots
+barplotdata <- as.data.frame(topTags(QLFtestX2, n=sum(decideTestsobjX2[c(1,2,3),]), sort.by="PValue"))
+
+par(mar=c(4,8,0.5,5)+0.1, xpd=TRUE, mfrow=c(1,1)) # mar is a numerical vector of the form c(bottom, left, top, right) which gives the number of lines of margin to be specified on the four sides of the plot. The default is c(5, 4, 4, 2) + 0.1.
+DAMgenes_logFC <- barplotdata[barplotdata$Gene_Symbol %in% DAMgenes[1:62],c(2,4,8)]
+DAMgenes_barplot <- barplot(DAMgenes_logFC$logFC, names.arg=DAMgenes_logFC$Gene_Symbol, main="Expression of top 50 DAM genes in New vs Old protocol", col=red_upreg_blue_downreg_blk_ns(DAMgenes_logFC), border="NA", xlab="Log Fold Change (logFC)", las=1, cex.axis=2, cex.names=1, cex.lab=1.5,horiz = TRUE, xlim = c(-10,10),width=rep(60,times=nrow(DAMgenes_logFC)))
+  
+  #Is the DAM signature significantly enriched in OLD microglia? Compare to all downreg DEGs (downreg DEGs in OLD vs NEW analysis = genes increased in OLD protocol)
+paste("Is DAM significantly enriched in OLD microglia?")
+overlap_DAM.OLD <- newGeneOverlap(DAMgenes,downreg_genes,total)
+overlap_DAM.OLD <- testGeneOverlap(overlap_DAM.OLD)
+overlap_DAM.OLD
+overlap_DAM.OLD_allstats <- print(overlap_DAM.OLD)
+paste("================================================")
+#Is DAM significantly enriched in NEW microglia? Compare to all upreg DEGs (upreg DEGs in OLD vs NEW analysis = genes increased in NEW protocol)
+paste("Is DAM significantly enriched in NEW microglia?")
+overlap_DAM.NEW <- newGeneOverlap(DAMgenes,upreg_genes,total)
+overlap_DAM.NEW <- testGeneOverlap(overlap_DAM.NEW)
+overlap_DAM.NEW
+overlap_DAM.NEW_allstats <- print(overlap_DAM.NEW)
+paste("================================================")
+paste("================================================")
+
+```
